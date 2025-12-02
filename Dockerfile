@@ -1,4 +1,4 @@
-FROM runpod/base:0.5.1-cuda12.1.0-devel-ubuntu22.04
+FROM runpod/base:0.6.3-cuda12.1.0
 
 WORKDIR /workspace
 
