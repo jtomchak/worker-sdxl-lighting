@@ -1,16 +1,38 @@
-FROM runpod/base:0.6.3-cuda12.1.0
+# base image with cuda 12.1
+FROM nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04
 
-WORKDIR /workspace
+# install python 3.11 and pip
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    software-properties-common \
+    && add-apt-repository ppa:deadsnakes/ppa \
+    && apt-get update && apt-get install -y --no-install-recommends \
+    python3.11 \
+    python3.11-venv \
+    python3-pip \
+    git \
+    && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt /workspace/requirements.txt
-RUN pip install --no-cache-dir -r /workspace/requirements.txt
+# install uv
+RUN pip install uv
 
-COPY handler.py /workspace/handler.py
-COPY schemas.py /workspace/schemas.py
-COPY download_weights.py /workspace/download_weights.py
-COPY test_input.json /workspace/test_input.json
+# create venv
+ENV PATH="/.venv/bin:${PATH}"
+RUN uv venv --python 3.11 /.venv
 
-ENV HF_HOME=/workspace/.cache/huggingface \
-    PYTHONUNBUFFERED=1
+# install dependencies
+RUN uv pip install torch --extra-index-url https://download.pytorch.org/whl/cu121 \
+    diffusers transformers accelerate safetensors runpod \
+    Pillow huggingface-hub hf_transfer
 
-CMD ["python", "-u", "handler.py"]
+# copy files
+COPY download_weights.py schemas.py handler.py test_input.json /
+
+# enable faster HF downloads
+ENV HF_HUB_ENABLE_HF_TRANSFER=1
+
+# download the weights from hugging face
+RUN python /download_weights.py
+
+# run the handler
+CMD python -u /handler.py
