@@ -1,156 +1,150 @@
 """
-SDXL Turbo Worker for RunPod Serverless
-Ultra-fast image generation with Stable Diffusion XL Turbo
+SDXL Lightning Worker for RunPod Serverless
+Turbo-style API backed by ByteDance/SDXL-Lightning.
 """
 
-import os
 import base64
 import io
-import time
-from typing import Optional, Dict, Any
+import os
+import random
+from typing import Any, Dict, List
 
-import torch
 import runpod
-from runpod.serverless.utils import rp_upload, rp_cleanup
-from runpod.serverless.utils.rp_validator import validate
-
-from diffusers import AutoPipelineForText2Image
+import torch
+from diffusers import (
+    EulerDiscreteScheduler,
+    StableDiffusionXLPipeline,
+    UNet2DConditionModel,
+)
+from huggingface_hub import hf_hub_download
 from PIL import Image
+from safetensors.torch import load_file
 
-from schemas import INPUT_SCHEMA
+from schemas import LightningInput
+
+# -------------------------------------------------------------------
+# 1. Global model init
+# -------------------------------------------------------------------
+
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+DTYPE = torch.float16 if DEVICE == "cuda" else torch.float32
+
+BASE_MODEL_ID = os.getenv("BASE_MODEL_ID", "stabilityai/stable-diffusion-xl-base-1.0")
+LIGHTNING_REPO = os.getenv("LIGHTNING_REPO", "ByteDance/SDXL-Lightning")
+LIGHTNING_CKPT = os.getenv("LIGHTNING_CKPT", "sdxl_lightning_4step_unet.safetensors")
 
 
-class ModelHandler:
-    def __init__(self):
-        """Initialize the SDXL Turbo pipeline."""
-        self.pipe = None
-        self.load_model()
+def _infer_steps_from_ckpt(name: str) -> int:
+    for n in (1, 2, 4, 8):
+        if f"{n}step" in name:
+            return n
+    return 4
 
-    def load_model(self):
-        """Load the SDXL Turbo model."""
-        print("🚀 Loading SDXL Turbo model...")
 
-        try:
-            self.pipe = AutoPipelineForText2Image.from_pretrained(
-                "stabilityai/sdxl-turbo",
-                torch_dtype=torch.float16,
-                variant="fp16",
-                use_safetensors=True,
-                local_files_only=False,
-            )
+LIGHTNING_STEPS = _infer_steps_from_ckpt(LIGHTNING_CKPT)
+print(f"[startup] Loading SDXL-Lightning ({LIGHTNING_CKPT}, {LIGHTNING_STEPS} steps) on {DEVICE}…")
 
-            if torch.cuda.is_available():
-                self.pipe.to("cuda")
-                print("✅ Model loaded successfully on GPU!")
-            else:
-                print("⚠️  GPU not available, running on CPU")
 
-        except Exception as e:
-            print(f"❌ Error loading model: {str(e)}")
-            raise RuntimeError(f"Failed to load SDXL Turbo model: {str(e)}")
+def load_pipeline() -> StableDiffusionXLPipeline:
+    ckpt_path = hf_hub_download(LIGHTNING_REPO, LIGHTNING_CKPT)
 
-    def generate_image(self, job_input: Dict[str, Any]) -> Dict[str, Any]:
-        """Generate image using SDXL Turbo."""
+    unet = UNet2DConditionModel.from_config(
+        BASE_MODEL_ID,
+        subfolder="unet",
+    ).to(DEVICE, DTYPE)
 
-        # Extract parameters
-        prompt = job_input.get("prompt")
-        negative_prompt = job_input.get("negative_prompt")
-        height = job_input.get("height", 512)
-        width = job_input.get("width", 512)
-        num_inference_steps = job_input.get("num_inference_steps", 1)
-        guidance_scale = job_input.get("guidance_scale", 0.0)
-        num_images = job_input.get("num_images", 1)
-        seed = job_input.get("seed")
+    state_dict = load_file(ckpt_path, device=DEVICE)
+    unet.load_state_dict(state_dict)
 
-        print(f"🎨 Generating {num_images} image(s) with prompt: '{prompt[:50]}...'")
-        print(
-            f"📐 Size: {width}x{height}, Steps: {num_inference_steps}, Guidance: {guidance_scale}"
+    pipe = StableDiffusionXLPipeline.from_pretrained(
+        BASE_MODEL_ID,
+        unet=unet,
+        torch_dtype=DTYPE,
+        variant="fp16" if DTYPE == torch.float16 else None,
+    ).to(DEVICE)
+
+    pipe.scheduler = EulerDiscreteScheduler.from_config(
+        pipe.scheduler.config, timestep_spacing="trailing"
+    )
+
+    pipe.enable_vae_slicing()
+    if hasattr(pipe, "enable_xformers_memory_efficient_attention"):
+        pipe.enable_xformers_memory_efficient_attention()
+
+    return pipe
+
+
+pipe = load_pipeline()
+
+
+# -------------------------------------------------------------------
+# 2. Utility functions
+# -------------------------------------------------------------------
+
+def _image_to_data_url(img: Image.Image) -> str:
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+    return f"data:image/png;base64,{b64}"
+
+
+# -------------------------------------------------------------------
+# 3. RunPod handler
+# -------------------------------------------------------------------
+
+def handler(event: Dict[str, Any]) -> Dict[str, Any]:
+    job_input = event.get("input") or {}
+    li = LightningInput.from_event(job_input)
+
+    if not li.prompt:
+        raise ValueError("`prompt` is required.")
+
+    num_inference_steps = LIGHTNING_STEPS
+    guidance_scale = max(0.0, float(li.guidance_scale))
+
+    if li.seed is None:
+        li.seed = random.randint(0, 2**32 - 1)
+
+    generator = torch.Generator(device=DEVICE).manual_seed(li.seed)
+    num_images = max(1, min(4, li.num_images))
+
+    with torch.inference_mode():
+        out = pipe(
+            prompt=li.prompt,
+            negative_prompt=li.negative_prompt,
+            height=li.height,
+            width=li.width,
+            num_inference_steps=num_inference_steps,
+            guidance_scale=guidance_scale,
+            num_images_per_prompt=num_images,
+            generator=generator,
         )
 
-        # Set seed for reproducibility
-        if seed is not None:
-            torch.manual_seed(seed)
-            if torch.cuda.is_available():
-                torch.cuda.manual_seed(seed)
+    images: List[Image.Image] = out.images
+    data_urls = [_image_to_data_url(img) for img in images]
 
-        try:
-            start_time = time.time()
-
-            # Generate images
-            result = self.pipe(
-                prompt=prompt,
-                negative_prompt=negative_prompt,
-                height=height,
-                width=width,
-                num_inference_steps=num_inference_steps,
-                guidance_scale=guidance_scale,
-                num_images_per_prompt=num_images,
-            )
-
-            generation_time = time.time() - start_time
-            print(f"⚡ Generated in {generation_time:.2f} seconds")
-
-            # Process images
-            images_data = []
-            for i, image in enumerate(result.images):
-                # Convert to base64
-                buffer = io.BytesIO()
-                image.save(buffer, format="PNG")
-                image_bytes = buffer.getvalue()
-                image_b64 = base64.b64encode(image_bytes).decode("utf-8")
-
-                images_data.append(
-                    {"image": image_b64, "seed": seed + i if seed is not None else None}
-                )
-
-            return {
-                "images": images_data,
-                "generation_time": generation_time,
-                "parameters": {
-                    "prompt": prompt,
-                    "negative_prompt": negative_prompt,
-                    "width": width,
-                    "height": height,
-                    "num_inference_steps": num_inference_steps,
-                    "guidance_scale": guidance_scale,
-                    "seed": seed,
-                },
+    return {
+        "images": [
+            {
+                "image": data_urls[i],
+                "seed": li.seed,
             }
-
-        except Exception as e:
-            print(f"❌ Error during generation: {str(e)}")
-            raise RuntimeError(f"Image generation failed: {str(e)}")
-
-
-# Initialize model handler
-model_handler = ModelHandler()
-
-
-def handler(job):
-    """
-    Handler function for RunPod serverless.
-    """
-    try:
-        # Validate input
-        job_input = job["input"]
-
-        # Validate against schema
-        validated_input = validate(job_input, INPUT_SCHEMA)
-        if "errors" in validated_input:
-            return {"error": f"Input validation failed: {validated_input['errors']}"}
-
-        validated_data = validated_input["validated_input"]
-
-        # Generate image
-        result = model_handler.generate_image(validated_data)
-
-        return result
-
-    except Exception as e:
-        print(f"❌ Handler error: {str(e)}")
-        return {"error": str(e)}
+            for i in range(len(data_urls))
+        ],
+        "generation_time": None,
+        "parameters": {
+            "prompt": li.prompt,
+            "negative_prompt": li.negative_prompt,
+            "width": li.width,
+            "height": li.height,
+            "num_inference_steps": num_inference_steps,
+            "guidance_scale": guidance_scale,
+            "seed": li.seed,
+            "model": "ByteDance/SDXL-Lightning",
+            "checkpoint": LIGHTNING_CKPT,
+        },
+    }
 
 
 if __name__ == "__main__":
-    print("🎯 Starting SDXL Turbo Worker...")
     runpod.serverless.start({"handler": handler})
