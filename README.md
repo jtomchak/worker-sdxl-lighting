@@ -12,6 +12,7 @@ Run SDXL Lightning ([ByteDance/SDXL-Lightning](https://huggingface.co/ByteDance/
 
 ## Usage
 
+
 The worker accepts the following input parameters:
 
 | Parameter             | Type    | Default | Required | Description                                                       |
