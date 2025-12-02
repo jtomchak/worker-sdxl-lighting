@@ -7,6 +7,7 @@ import base64
 import io
 import os
 import random
+import time
 from typing import Any, Dict, List, Optional
 
 import requests
@@ -135,6 +136,7 @@ def handler(event: Dict[str, Any]) -> Dict[str, Any]:
     if li.image:
         input_image = download_image(li.image)
 
+    start_time = time.time()
     with torch.inference_mode():
         if input_image is not None:
             # img2img: modify the input image with the prompt
@@ -160,6 +162,7 @@ def handler(event: Dict[str, Any]) -> Dict[str, Any]:
                 num_images_per_prompt=num_images,
                 generator=generator,
             )
+    generation_time = round(time.time() - start_time, 3)
 
     images: List[Image.Image] = out.images
     data_urls = [_image_to_data_url(img) for img in images]
@@ -189,7 +192,7 @@ def handler(event: Dict[str, Any]) -> Dict[str, Any]:
             }
             for i in range(len(data_urls))
         ],
-        "generation_time": None,
+        "generation_time": generation_time,
         "parameters": parameters,
     }
 
