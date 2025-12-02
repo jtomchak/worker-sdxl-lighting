@@ -5,3 +5,4 @@ diffusers
 safetensors
 huggingface_hub
 Pillow
+requests
