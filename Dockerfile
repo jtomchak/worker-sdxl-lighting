@@ -3,7 +3,7 @@ FROM runpod/base:0.6.3-cuda12.1.0
 WORKDIR /workspace
 
 COPY requirements.txt /workspace/requirements.txt
-RUN uv pip install --system --no-cache-dir -r /workspace/requirements.txt
+RUN pip install --no-cache-dir -r /workspace/requirements.txt
 
 COPY handler.py /workspace/handler.py
 COPY schemas.py /workspace/schemas.py
