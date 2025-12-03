@@ -73,8 +73,10 @@ def load_pipelines() -> tuple[StableDiffusionXLPipeline, StableDiffusionXLImg2Im
     )
 
     txt2img_pipe.enable_vae_slicing()
-    if hasattr(txt2img_pipe, "enable_xformers_memory_efficient_attention"):
+    try:
         txt2img_pipe.enable_xformers_memory_efficient_attention()
+    except ModuleNotFoundError:
+        print("[startup] xformers not available, using default attention")
 
     # Create img2img pipeline sharing components with txt2img
     img2img_pipe = StableDiffusionXLImg2ImgPipeline(
