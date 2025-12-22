@@ -21,7 +21,21 @@ ENV PATH="/.venv/bin:${PATH}"
 RUN uv venv --python 3.11 /.venv
 
 # install dependencies
-RUN uv pip install torch --extra-index-url https://download.pytorch.org/whl/cu121 diffusers==0.25.1 transformers accelerate safetensors xformers==0.0.23 runpod numpy==1.26.3 scipy triton "huggingface-hub<0.21" hf_transfer setuptools Pillow requests
+RUN uv pip install torch==2.1.1 --extra-index-url https://download.pytorch.org/whl/cu121 \
+    diffusers==0.25.1 \
+    transformers==4.36.2 \
+    accelerate==0.25.0 \
+    safetensors \
+    xformers==0.0.23 \
+    runpod \
+    numpy==1.26.3 \
+    scipy \
+    triton \
+    "huggingface-hub>=0.19,<0.21" \
+    hf_transfer \
+    setuptools \
+    Pillow \
+    requests
 
 # copy files
 COPY download_weights.py schemas.py handler.py test_input.json /
@@ -30,4 +44,4 @@ COPY download_weights.py schemas.py handler.py test_input.json /
 RUN python /download_weights.py
 
 # run the handler
-CMD python -u /handler.py
+CMD ["python", "-u", "/handler.py"]
