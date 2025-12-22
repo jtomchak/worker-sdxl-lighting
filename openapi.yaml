@@ -1,0 +1,535 @@
+openapi: 3.0.3
+info:
+  title: SDXL Turbo API
+  description: |
+    ## Overview
+    
+    A high-performance image generation API powered by **stabilityai/sdxl-turbo** running on RunPod Serverless.
+    
+    SDXL Turbo is a distilled version of Stable Diffusion XL that generates high-quality images in just **1-4 inference steps**, making it significantly faster than standard SDXL while maintaining excellent image quality.
+    
+    ## Features
+    
+    - **Text-to-Image (txt2img)**: Generate images from text prompts
+    - **Image-to-Image (img2img)**: Transform existing images guided by text prompts
+    - **Ultra-fast inference**: 1-4 step generation
+    - **Batch generation**: Generate up to 4 images per request
+    - **Flexible dimensions**: Support for various aspect ratios (512-1536px)
+    
+    ## Authentication
+    
+    This API runs on RunPod Serverless. Authentication is handled via RunPod API keys passed in the `Authorization` header.
+    
+    ```
+    Authorization: Bearer YOUR_RUNPOD_API_KEY
+    ```
+    
+    ## RunPod Endpoints
+    
+    ### Synchronous (RunSync)
+    ```
+    POST https://api.runpod.ai/v2/{endpoint_id}/runsync
+    ```
+    
+    ### Asynchronous (Run)
+    ```
+    POST https://api.runpod.ai/v2/{endpoint_id}/run
+    ```
+    
+    ### Check Status
+    ```
+    GET https://api.runpod.ai/v2/{endpoint_id}/status/{job_id}
+    ```
+    
+  version: 1.0.0
+  contact:
+    name: API Support
+  license:
+    name: Apache 2.0
+    url: https://www.apache.org/licenses/LICENSE-2.0.html
+
+servers:
+  - url: https://api.runpod.ai/v2/{endpoint_id}
+    description: RunPod Serverless Endpoint
+    variables:
+      endpoint_id:
+        default: your-endpoint-id
+        description: Your RunPod endpoint ID
+
+tags:
+  - name: Generation
+    description: Image generation operations
+  - name: Status
+    description: Job status operations
+
+paths:
+  /runsync:
+    post:
+      tags:
+        - Generation
+      summary: Generate images synchronously
+      description: |
+        Submit an image generation request and wait for the result.
+        
+        **Timeout**: This endpoint will wait up to 90 seconds for completion.
+        For longer jobs, use `/run` instead and poll `/status/{job_id}`.
+        
+        ## Modes
+        
+        ### Text-to-Image
+        Provide only the `prompt` parameter to generate images from scratch.
+        
+        ### Image-to-Image
+        Provide both `prompt` and `image` (URL) to transform an existing image.
+        The `strength` parameter controls how much the original image is modified.
+      operationId: runSync
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RunRequest'
+            examples:
+              txt2img_basic:
+                summary: Basic text-to-image
+                value:
+                  input:
+                    prompt: "A majestic lion in a savanna at sunset, photorealistic, 8k"
+              txt2img_advanced:
+                summary: Advanced text-to-image with all options
+                value:
+                  input:
+                    prompt: "A cyberpunk cityscape at night, neon lights reflecting on wet streets, highly detailed"
+                    negative_prompt: "blurry, low quality, distorted, deformed"
+                    width: 1344
+                    height: 768
+                    guidance_scale: 1.5
+                    seed: 42
+                    num_images: 2
+              img2img_basic:
+                summary: Image-to-image transformation
+                value:
+                  input:
+                    prompt: "Transform into a watercolor painting style"
+                    image: "https://example.com/input-image.jpg"
+                    strength: 0.75
+              img2img_style_transfer:
+                summary: Style transfer with lower strength
+                value:
+                  input:
+                    prompt: "In the style of Van Gogh's Starry Night"
+                    negative_prompt: "photorealistic, photograph"
+                    image: "https://example.com/landscape.jpg"
+                    strength: 0.6
+                    seed: 12345
+      responses:
+        '200':
+          description: Successful generation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SyncResponse'
+              examples:
+                success:
+                  summary: Successful response
+                  value:
+                    id: "abc123-job-id"
+                    status: "COMPLETED"
+                    output:
+                      images:
+                        - image: "data:image/png;base64,iVBORw0KGgo..."
+                          seed: 42
+                      generation_time: 1.234
+                      parameters:
+                        prompt: "A majestic lion in a savanna at sunset"
+                        negative_prompt: null
+                        num_inference_steps: 4
+                        guidance_scale: 0.0
+                        seed: 42
+                        model: "stabilityai/sdxl-turbo"
+                        width: 1024
+                        height: 1024
+        '400':
+          description: Bad request - invalid parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Unauthorized - invalid or missing API key
+        '408':
+          description: Request timeout - job took too long
+
+  /run:
+    post:
+      tags:
+        - Generation
+      summary: Generate images asynchronously
+      description: |
+        Submit an image generation request and receive a job ID immediately.
+        Use `/status/{job_id}` to check completion and retrieve results.
+        
+        Recommended for:
+        - Batch generation (multiple images)
+        - Large image dimensions
+        - When you don't need immediate results
+      operationId: runAsync
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RunRequest'
+      responses:
+        '200':
+          description: Job submitted successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AsyncResponse'
+              example:
+                id: "abc123-job-id"
+                status: "IN_QUEUE"
+
+  /status/{job_id}:
+    get:
+      tags:
+        - Status
+      summary: Check job status
+      description: |
+        Retrieve the status and results of a previously submitted job.
+        
+        ## Status Values
+        - `IN_QUEUE`: Job is waiting to be processed
+        - `IN_PROGRESS`: Job is currently being processed
+        - `COMPLETED`: Job finished successfully, `output` contains results
+        - `FAILED`: Job failed, `error` contains details
+        - `CANCELLED`: Job was cancelled
+      operationId: getStatus
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: job_id
+          in: path
+          required: true
+          description: The job ID returned from `/run` or `/runsync`
+          schema:
+            type: string
+            example: "abc123-job-id"
+      responses:
+        '200':
+          description: Job status retrieved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatusResponse'
+        '404':
+          description: Job not found
+
+  /cancel/{job_id}:
+    post:
+      tags:
+        - Status
+      summary: Cancel a job
+      description: Cancel a queued or in-progress job
+      operationId: cancelJob
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: job_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Job cancelled successfully
+        '404':
+          description: Job not found
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: RunPod API Key
+
+  schemas:
+    RunRequest:
+      type: object
+      required:
+        - input
+      properties:
+        input:
+          $ref: '#/components/schemas/GenerationInput'
+
+    GenerationInput:
+      type: object
+      required:
+        - prompt
+      properties:
+        prompt:
+          type: string
+          description: |
+            The text description of the image to generate.
+            
+            **Tips for better results:**
+            - Be specific and descriptive
+            - Include style keywords (photorealistic, anime, oil painting, etc.)
+            - Mention lighting, composition, and quality modifiers
+          example: "A majestic lion in a savanna at sunset, photorealistic, 8k, detailed fur"
+          minLength: 1
+          maxLength: 2000
+        
+        negative_prompt:
+          type: string
+          nullable: true
+          description: |
+            Text describing what to avoid in the generated image.
+            
+            **Common negative prompts:**
+            - "blurry, low quality, distorted"
+            - "deformed, ugly, bad anatomy"
+            - "watermark, signature, text"
+          example: "blurry, low quality, distorted, deformed, ugly"
+          maxLength: 2000
+        
+        image:
+          type: string
+          format: uri
+          nullable: true
+          description: |
+            **Image-to-Image Mode**: URL of an input image to transform.
+            
+            When provided, the API operates in img2img mode, using the input image
+            as a starting point and applying the prompt as guidance for transformation.
+            
+            **Supported formats:** JPEG, PNG, WebP
+            
+            **Requirements:**
+            - Must be a publicly accessible URL
+            - Image will be converted to RGB
+            - Timeout: 30 seconds for download
+          example: "https://example.com/input-image.jpg"
+        
+        strength:
+          type: number
+          format: float
+          minimum: 0.0
+          maximum: 1.0
+          default: 0.8
+          description: |
+            **Image-to-Image only**: Controls how much to transform the input image.
+            
+            - `0.0` = No change (returns original image)
+            - `0.5` = Moderate transformation (preserves structure)
+            - `0.8` = Strong transformation (default, recommended)
+            - `1.0` = Maximum transformation (may lose original details)
+            
+            *Ignored for text-to-image requests.*
+          example: 0.75
+        
+        width:
+          type: integer
+          minimum: 512
+          maximum: 1536
+          default: 1024
+          description: |
+            **Text-to-Image only**: Width of the generated image in pixels.
+            
+            - Values are snapped to multiples of 8
+            - Recommended: 1024 for square, 1344x768 for landscape, 768x1344 for portrait
+            
+            *Ignored for image-to-image requests (uses input image dimensions).*
+          example: 1024
+        
+        height:
+          type: integer
+          minimum: 512
+          maximum: 1536
+          default: 1024
+          description: |
+            **Text-to-Image only**: Height of the generated image in pixels.
+            
+            - Values are snapped to multiples of 8
+            - Recommended: 1024 for square, 1344x768 for landscape, 768x1344 for portrait
+            
+            *Ignored for image-to-image requests (uses input image dimensions).*
+          example: 1024
+        
+        guidance_scale:
+          type: number
+          format: float
+          minimum: 0.0
+          maximum: 20.0
+          default: 0.0
+          description: |
+            Controls how closely the generation follows the prompt.
+            
+            **For SDXL Turbo:**
+            - `0.0` = Recommended for best quality (default)
+            - `1.0-2.0` = Slightly more prompt adherence
+            
+            *Note: SDXL Turbo is trained for low/zero guidance, higher values may reduce quality.*
+          example: 0.0
+        
+        num_inference_steps:
+          type: integer
+          minimum: 1
+          maximum: 8
+          default: 4
+          description: |
+            Number of denoising steps.
+            
+            **For SDXL Turbo:**
+            - `1` = Good quality, fastest
+            - `2-4` = Best quality (recommended)
+            - `5-8` = Diminishing returns, slower
+          example: 4
+        
+        seed:
+          type: integer
+          format: int64
+          nullable: true
+          minimum: 0
+          maximum: 4294967295
+          description: |
+            Random seed for reproducible generation.
+            
+            - Same seed + same parameters = same image
+            - If not provided, a random seed is generated
+            - Returned in the response for reproducibility
+          example: 42
+        
+        num_images:
+          type: integer
+          minimum: 1
+          maximum: 4
+          default: 1
+          description: |
+            Number of images to generate in a single request.
+            
+            - Maximum: 4 images per request
+            - All images use the same seed (for consistency)
+            - Generation time scales roughly linearly
+          example: 1
+
+    GenerationOutput:
+      type: object
+      properties:
+        images:
+          type: array
+          description: Array of generated images
+          items:
+            type: object
+            properties:
+              image:
+                type: string
+                format: byte
+                description: |
+                  Base64-encoded PNG image as a data URL.
+                  
+                  Format: `data:image/png;base64,{base64_data}`
+                example: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUg..."
+              seed:
+                type: integer
+                format: int64
+                description: The seed used to generate this specific image
+                example: 42
+        
+        generation_time:
+          type: number
+          format: float
+          description: Time taken for generation in seconds
+          example: 1.234
+        
+        parameters:
+          type: object
+          description: Echo of the parameters used for generation
+          properties:
+            prompt:
+              type: string
+            negative_prompt:
+              type: string
+              nullable: true
+            num_inference_steps:
+              type: integer
+              description: Inference steps used
+            guidance_scale:
+              type: number
+            seed:
+              type: integer
+            model:
+              type: string
+              example: "stabilityai/sdxl-turbo"
+            width:
+              type: integer
+              description: Present for txt2img requests
+            height:
+              type: integer
+              description: Present for txt2img requests
+            image:
+              type: string
+              description: Present for img2img requests - input image URL
+            strength:
+              type: number
+              description: Present for img2img requests
+
+    SyncResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          description: Unique job identifier
+          example: "abc123-job-id"
+        status:
+          type: string
+          enum: [COMPLETED, FAILED]
+          description: Job completion status
+        output:
+          $ref: '#/components/schemas/GenerationOutput'
+        error:
+          type: string
+          description: Error message if status is FAILED
+
+    AsyncResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          description: Unique job identifier for status polling
+          example: "abc123-job-id"
+        status:
+          type: string
+          enum: [IN_QUEUE, IN_PROGRESS]
+          example: "IN_QUEUE"
+
+    StatusResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          example: "abc123-job-id"
+        status:
+          type: string
+          enum: [IN_QUEUE, IN_PROGRESS, COMPLETED, FAILED, CANCELLED]
+        output:
+          $ref: '#/components/schemas/GenerationOutput'
+        error:
+          type: string
+          nullable: true
+
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+          description: Error message describing what went wrong
+          example: "`prompt` is required."
+
+security:
+  - bearerAuth: []
