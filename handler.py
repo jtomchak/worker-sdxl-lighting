@@ -62,12 +62,33 @@ class ModelHandler:
             print(f"❌ Error loading models: {str(e)}")
             raise RuntimeError(f"Failed to load SDXL Turbo models: {str(e)}")
 
-    def download_image(self, url: str) -> Image.Image:
-        """Download an image from a URL."""
-        print(f"📥 Downloading image from: {url[:50]}...")
+    def load_image(self, image_input: str) -> Image.Image:
+        """Load an image from a URL or base64 data URI."""
+        
+        # Check if it's a base64 data URI
+        if image_input.startswith("data:image/"):
+            print("📥 Loading image from base64 data URI...")
+            try:
+                # Extract base64 data after the comma
+                header, base64_data = image_input.split(",", 1)
+                image_bytes = base64.b64decode(base64_data)
+                image = Image.open(io.BytesIO(image_bytes))
+                
+                # Convert to RGB if necessary
+                if image.mode != "RGB":
+                    image = image.convert("RGB")
+                
+                print(f"✅ Image loaded from base64: {image.size[0]}x{image.size[1]}")
+                return image
+                
+            except Exception as e:
+                raise RuntimeError(f"Failed to decode base64 image: {str(e)}")
+        
+        # Otherwise treat as URL
+        print(f"📥 Downloading image from: {image_input[:50]}...")
         
         try:
-            response = requests.get(url, timeout=IMAGE_DOWNLOAD_TIMEOUT)
+            response = requests.get(image_input, timeout=IMAGE_DOWNLOAD_TIMEOUT)
             response.raise_for_status()
             
             image = Image.open(io.BytesIO(response.content))
@@ -168,8 +189,8 @@ class ModelHandler:
         print(f"📝 Prompt: '{prompt[:50]}...'")
         print(f"💪 Strength: {strength}, Steps: {num_inference_steps}, Guidance: {guidance_scale}")
 
-        # Download input image
-        input_image = self.download_image(image_url)
+        # Load input image (from URL or base64)
+        input_image = self.load_image(image_url)
 
         # Set seed for reproducibility
         generator = None
